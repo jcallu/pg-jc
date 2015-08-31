@@ -1,8 +1,7 @@
 {
   "name": "pg-jc",
-  "version": "0.0.1",
-  "description": "ORM-style Postgresql",
-  "main": "./app/vgpCore.js",
+  "version": "0.0.5",
+  "description": "Node.js ORM-style Module",
   "engines": {
     "node": "0.12.2"
   },
@@ -16,7 +15,7 @@
     "darwin",
     "linux"
   ],
-  "author": "John Hanrahan",
+  "author": "Jacinto Callu",
   "dependencies": {
     "async": "^1.4.2",
     "inflection": "^1.7.1",
@@ -24,5 +23,23 @@
     "pg": "^4.4.1",
     "pg-native": "^1.8.1",
     "q": "^1.4.1"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@bitbucket.org:jcallu/pg-jc.git"
+  },
+  "keywords": [
+    "postgresql",
+    "transaction",
+    "promise",
+    "postgresql",
+    "psql",
+    "database",
+    "pool",
+    "node",
+    "orm"
+  ],
+  "license": "ISC",
+  "readme": "README.md",
+  "private": "true"
 }
