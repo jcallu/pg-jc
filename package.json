@@ -1,0 +1,28 @@
+{
+  "name": "pg-jc",
+  "version": "0.0.1",
+  "description": "ORM-style Postgresql",
+  "main": "./app/vgpCore.js",
+  "engines": {
+    "node": "0.12.2"
+  },
+  "scripts": {
+    "test": "./test.js"
+  },
+  "contributors": [
+    "Jacinto Callu"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "author": "John Hanrahan",
+  "dependencies": {
+    "async": "^1.4.2",
+    "inflection": "^1.7.1",
+    "lodash": "^3.10.1",
+    "pg": "^4.4.1",
+    "pg-native": "^1.8.1",
+    "q": "^1.4.1"
+  }
+}
