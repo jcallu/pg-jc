@@ -39,11 +39,17 @@ function createVirtualSchema(dbName,dbAddr){
         //abstractDBLog("Using file DB cache");
         schemaFromFile = JSON.parse(fs.readFileSync(pathToFileCache).toString('utf8'));
       } catch(e){
-        var err = pathToFileCache + " does not exist";
-        if( schemaTmp.error ){
-          console.error("Schema Loading error =>",schemaTmp.error);
+        if( e.message.indexOf("ENOENT") > -1 ){
+          schemaTmp = schemaTmp.rows;
+          fs.writeFileSync(pathToFileCache,JSON.stringify(schemaTmp));
+        } else {
+          console.error(e.stack);
+          var err = pathToFileCache + " does not exist";
+          if( schemaTmp.error ){
+            console.error("Schema Loading error =>",schemaTmp.error);
+          }
+          throw err;
         }
-        throw err;
       }
       schemaTmp = schemaFromFile;
     }
@@ -133,20 +139,21 @@ AbstractDB.prototype.rawsql =  function (rawSql){
   return this;
 };
 
+
 AbstractDB.prototype.select =  function (selectParams){
   this.reset();
   this.selecting = true;
   this.whereQuery = '';
-  this.query = '';
+  var querySelect = '';
   var isRawSQL = typeof selectParams === 'string' ? true : false;
   if( isRawSQL ){
     var rawSQLStr = selectParams.toLowerCase().trim().replace(/(\s{1,})/gm," ");
     if( rawSQLStr.indexOf('select') === 0 )
-      this.query = " "+rawSQLStr+" "; // select * from this.tablename expected;
+      querySelect = " "+rawSQLStr+" "; // select * from this.tablename expected;
     else if ( rawSQLStr.indexOf('select') !== 0 )
-      this.query = "SELECT "+selectParams+" FROM "+this.tablename;
+      querySelect = "SELECT "+selectParams+" FROM "+this.tablename;
     else
-      this.query = updateObjOrRawSQL;
+      querySelect = updateObjOrRawSQL;
   } else {
     if( ! ( selectParams instanceof Array ) ) selectParams = [];
     var tableName = this.tablename;
@@ -155,13 +162,14 @@ AbstractDB.prototype.select =  function (selectParams){
       else return tableName + "."+colName;
     });
     if( selectParams.length === 0 ) selectParams = ['*'];
-    this.query = "SELECT "+selectParams.join(' , ')+" FROM "+ this.tablename+" "+this.tablename + " ";
+    querySelect = "SELECT "+selectParams.join(' , ')+" FROM "+ this.tablename+" "+this.tablename + " ";
   }
-
+  this.query = querySelect;
   return this;
 };
 
 AbstractDB.prototype.selectAll = function(){
+  this.reset();
   return this.select();
 };
 
@@ -170,9 +178,21 @@ AbstractDB.prototype.selectWhere = function(selectWhereParams,whereObjOrRawSQL){
 };
 
 function externalJoinHelper(obj){
-  var onCondition = "TRUE";
+  var onCondition = "";
   _.forEach(obj,function(value,key){
-    onCondition += " AND "+value + " = " + key + " ";
+    if( value instanceof Object && typeof value.condition === 'string' ){
+      onCondition += " AND "+key+" "+value.condition+" ";
+      return;
+    }
+    if( typeof value === 'boolean' ){
+      onCondition += " AND "+key+" IS "+value+"  ";
+      return;
+    }
+    if( typeof value === 'number' ){
+      onCondition += "  AND "+key+" = "+value+" ";
+      return;
+    }
+    onCondition += " AND "+key + " = " + value + " ";
   });
   return onCondition;
 }
@@ -195,17 +215,20 @@ AbstractDB.prototype.join = function(tablesToJoinOnObjs){
       obj.on = obj.on instanceof Array ? obj.on : [];
       var tableName = tablename;
       var alias = obj.as || tablename;
-      var onArray = _.compact(_.map(obj.on,function(joinOnColumnsOrObj){
+      var onArray = _(obj.on).chain().map(function(joinOnColumnsOrObj){
         if( typeof joinOnColumnsOrObj === 'string' && schema.indexOf(joinOnColumnsOrObj) > -1 ){
-          return " "+alias+"."+joinOnColumnsOrObj+" = " +thisTableName+"."+joinOnColumnsOrObj+" ";
+          return " AND "+alias+"."+joinOnColumnsOrObj+" = " +thisTableName+"."+joinOnColumnsOrObj+" ";
         }
         if( joinOnColumnsOrObj instanceof Object && _.keys(joinOnColumnsOrObj).length >= 1 ){
           return externalJoinHelper(joinOnColumnsOrObj);
         }
         return null;
-      }));
+      }).compact().value();
+      //console.log("on Array",onArray)
+      var onTrue = '';
       if( onArray.length === 0 ) onArray = ['false'];
-      joinSQL = " "+( obj.type||'INNER' ).toUpperCase() +" "+"JOIN "+ tableName + " " + alias + " ON " + onArray.join(' AND ') + " ";
+      if( onArray.length > 0 ) onTrue = 'TRUE ';
+      joinSQL = " "+( obj.type||'INNER' ).toUpperCase() +" "+"JOIN "+ tableName + " " + alias + " ON "+onTrue+" " + onArray.join(' ') + " ";
     });
   }
 
@@ -430,98 +453,120 @@ AbstractDB.prototype.deleteFrom = function(){
   return this;
 };
 
-function generateWhereObj(whereObjOrRawSQL){
+function GenerateWhereObj(whereObjOrRawSQL,AND){
 
   var isRawSQL = typeof whereObjOrRawSQL === 'string' ? true : false;
-  var where = null;
+  var where_CLAUSE = '';
   try {
     if( isRawSQL ){
-      where = '';
-      var rawSQLStr = whereObjOrRawSQL.toLowerCase().trim().replace(/(\s{1,})/gm," ");
+     where_CLAUSE = '';
+      var rawSQLStr = whereObjOrRawSQL.toLowerCase().trim().replace(/(\s{1,})/gm," ").trim();
       var isNotWhereAddOn = rawSQLStr.indexOf(" where ") === -1;
-      if( rawSQLStr.indexOf("where true") >= 0 && isNotWhereAddOn ){
-        where += " " + whereObjOrRawSQL + " "; // Syntax Sugar query expected here "WHERE TRUE blah and blah"
-        //abstractDBLog("1st str whereParam =>",whereObjOrRawSQL);
-      }
-      else if ( rawSQLStr.indexOf("and") === -1 && rawSQLStr.indexOf('where') === -1 && rawSQLStr && isNotWhereAddOn ){
-        where += " WHERE TRUE AND "+ whereObjOrRawSQL + " "; //Where starts on first condition without "AND" insensitive case
-        //abstractDBLog("2nd str  whereParam =>",whereObjOrRawSQL);
-      }
-      else if ( rawSQLStr.indexOf("and") === 0 && isNotWhereAddOn  ) {
-        where += " WHERE TRUE "+whereObjOrRawSQL + " "; //Starts with "AND" insensitive case
-        //abstractDBLog("3rd str  whereParam =>",whereObjOrRawSQL);
-      }
-      else if ( rawSQLStr && isNotWhereAddOn ) {
-        where += " WHERE "+whereObjOrRawSQL+ " "; // ANY corner case not handled like passing white space
-        //abstractDBLog("4th str  whereParam =>",whereObjOrRawSQL);
-      }
-      else if ( !isNotWhereAddOn && rawSQLStr.indexOf("and") !== 0 ){
-        where += " AND " + whereObjOrRawSQL + " ";
-        //abstractDBLog("5th str  whereParam =>",whereObjOrRawSQL);
-      }
-      else {
-        where += " "+whereObjOrRawSQL+" ";
-        //abstractDBLog("6th str  whereParam =>",whereObjOrRawSQL);
+      if ( AND ){
+        if( rawSQLStr.indexOf("and") !== 0 ){
+          where_CLAUSE += " AND " + whereObjOrRawSQL + " ";
+        } else {
+          where_CLAUSE += " " + whereObjOrRawSQL + " ";
+        }
+      } else {
+        if(  rawSQLStr.indexOf("where true") >= 0 && isNotWhereAddOn ){
+          where_CLAUSE += " " + whereObjOrRawSQL + " "; // Syntax Sugar query expected here "WHERE TRUE blah and blah"
+          //abstractDBLog("1st str whereParam =>",whereObjOrRawSQL);
+        }
+        else if (  rawSQLStr.indexOf("and") === -1 && rawSQLStr.indexOf('where') === -1 && rawSQLStr && isNotWhereAddOn ){
+         where_CLAUSE += " WHERE TRUE AND "+ whereObjOrRawSQL + " "; //Where starts on first condition without "AND" insensitive case
+          //abstractDBLog("2nd str  whereParam =>",whereObjOrRawSQL);
+        }
+        else if ( rawSQLStr.indexOf("and") === 0 && isNotWhereAddOn  ) {
+         where_CLAUSE += " WHERE TRUE "+whereObjOrRawSQL + " "; //Starts with "AND" insensitive case
+          //abstractDBLog("3rd str  whereParam =>",whereObjOrRawSQL);
+        }
+        else if (  rawSQLStr && isNotWhereAddOn ) {
+         where_CLAUSE += " WHERE "+whereObjOrRawSQL+ " "; // ANY corner case not handled like passing white space
+          //abstractDBLog("4th str  whereParam =>",whereObjOrRawSQL);
+        }
+        else if ( !isNotWhereAddOn && rawSQLStr.indexOf("and") !== 0 ){
+         where_CLAUSE += " AND " + whereObjOrRawSQL + " ";
+          //abstractDBLog("5th str  whereParam =>",whereObjOrRawSQL);
+        }
+        else {
+         where_CLAUSE += " "+whereObjOrRawSQL+" ";
+          //abstractDBLog("6th str  whereParam =>",whereObjOrRawSQL);
+        }
       }
     }
     else {
-      where = '';
-      where = " WHERE TRUE ";
+
+     where_CLAUSE = !AND ? " WHERE TRUE " : ''
       _.forEach(whereObjOrRawSQL, function(value,key){
-        if( _.isNull(value) || _.isUndefined(value) )
-          where += " AND " + key + " IS NULL ";
-        else if( ( key.lastIndexOf('_id') === (key.length-3) || key.trim() === 'score' )   && parseInt(value) > 0  ){
-          where += " AND " + key + " = "+parseInt(value)+" ";
+        if( _.isNull(value) || _.isUndefined(value) ){
+          where_CLAUSE += " AND " + key + " IS NULL ";
         }
-        else if(  typeof value === 'object' && value instanceof Date )
-          where += " AND "+ key +" = '"+ value.toISOString()+"'::TIMESTAMP ";
-        else if(  value instanceof Object && value.condition )
-          where += " AND " + key + " "+ value.condition + " ";
+        else if( ( key.lastIndexOf('_id') === (key.length-3) || key.trim() === 'score' )   && parseInt(value) > 0  ){
+          where_CLAUSE += " AND " + key + " = "+parseInt(value)+" ";
+        }
+        else if(  typeof value === 'object' && value instanceof Date ){
+          where_CLAUSE += " AND "+ key +" = '"+ value.toISOString()+"'::TIMESTAMP ";
+        }
+        else if(  value instanceof Object && value.condition ){
+          where_CLAUSE += " AND " + key + " "+ value.condition + " ";
+        }
         else if( key === 'raw_postgresql' ) {
-          where += " " + value + " ";
+          where_CLAUSE += " " + value + " ";
         }
         else if(  typeof value === 'boolean' ){
-          where += " AND " + key + " IS "+ value + " ";
+         where_CLAUSE += " AND " + key + " IS "+ value + " ";
         }
         else {
           try {
             value = value.toString();
           } catch(e){
+            console.error(e.stack);
             value = '';
           }
-          where += " AND " + key + " = '" + connection.escapeApostrophes(value) + "' ";
+         where_CLAUSE += " AND " + key + " = '" + connection.escapeApostrophes(value) + "' ";
         }
       });
     }
   } catch(e){
-    var data = '';
-    try{ data = JSON.stringify(whereObjOrRawSQL); } catch(e1){ }
-    e.message = e.message+"\whereObjOrRawSQL value => "+ data;
     console.error(e.stack);
   }
-  return where;
+  this.where = where_CLAUSE;
 }
+
+GenerateWhereObj.prototype.getWhere = function(){
+  return this.where;
+};
+
+AbstractDB.prototype.and = function(whereObjOrRawSQL){
+  var self = this;
+  var generatedWhereClause = new GenerateWhereObj(whereObjOrRawSQL,true);
+  var whereQueryGenerated = generatedWhereClause.getWhere();
+  //console.log("whereQueryGenerated",whereQueryGenerated)
+  this.whereQuery += ' '+whereQueryGenerated+' '
+  this.query += ' '+whereQueryGenerated+' ';
+  return this;
+}
+
 AbstractDB.prototype.where = function(whereObjOrRawSQL){
 
   var selectTmp = this.query.toLowerCase().trim().replace(/(\s{1,})/gm," ");
   if( !selectTmp && selectTmp.indexOf('select') === -1 && selectTmp.indexOf('update '+this.tablename) === -1  && selectTmp.indexOf('delete from') === -1  ) {
     this.query = "SELECT * FROM "+this.tablename + " "+this.tablename+ " ";
   }
-
-  if( ! whereObjOrRawSQL ) this.primaryKeyLkup = false;
-
-  var where = generateWhereObj(whereObjOrRawSQL);
-
-
-  if( typeof where === 'string' && where.length > 7 && this.deleting ){ // unlocking delete safety
+  if( ! whereObjOrRawSQL ){
+    this.primaryKeyLkup = false;
+  }
+  var generatedWhereClause = new GenerateWhereObj(whereObjOrRawSQL);
+  var whereQueryGenerated = generatedWhereClause.getWhere();
+  //console.log("whereQueryGenerated",whereQueryGenerated);
+  if( typeof whereQueryGenerated === 'string' && whereQueryGenerated.length > 7 && this.deleting ){ // unlocking delete safety
     this.query = this.query.replace("DELETE FROM "+this.tablename+" WHERE FALSE","DELETE FROM "+this.tablename+" ");
   }
-
-  this.whereQuery = where;
-  this.query += (where||'');
-  this.optimizeQuery();
-
-
+  this.whereQuery = whereQueryGenerated;
+  //console.log("where ->",whereQueryGenerated,'from ->',whereObjOrRawSQL);
+  this.query += (whereQueryGenerated||'');
+  //this.optimizeQuery();
   return this;
 };
 
@@ -576,7 +621,7 @@ AbstractDB.prototype.AndExists = function(tableNameExists,onColumnIds,whereExist
 
   }
 
-  var whereQuery = whereExistsObjOrSQL ? generateWhereObj(whereExistsObjOrSQL) : ' WHERE TRUE ';
+  var whereQuery = whereExistsObjOrSQL ? ( new GenerateWhereObj(whereExistsObjOrSQL) ).getWhere() : ' WHERE TRUE ';
   var mainTableName = this.tablename;
   var whereOnColumnIdsAnd = onColumnIds.length > 0 ? " AND " : " ";
   whereQuery =  "AND "+NOT+" EXISTS (select 1 from "+tableNameExists+ " "+tableNameExists+" "+
@@ -661,13 +706,16 @@ AbstractDB.prototype.dbQuerySync = function(query){
 };
 
 AbstractDB.prototype.run = function(callback){
+
   this.finalizeQuery();
 
-  var Query = this.query + this.returnIds;
+  var QueryToRun = this.query + this.returnIds;
+  var self = this;
+  this.reset();
   var IS_PROMISED = typeof callback !== 'function';
   var q;
   if( IS_PROMISED ) q = Q.defer();
-  var self = this;
+
 
   callback = typeof callback === 'function' ? callback : function(){};
   if( self.error ){
@@ -675,7 +723,7 @@ AbstractDB.prototype.run = function(callback){
     else callback(self.error,null);
     self.reset();
   } else {
-    self.dbQuery(Query,function(err,rows){
+    self.dbQuery(QueryToRun,function(err,rows){
       if(err ) {
         //console.error("Error query =>",Query);
         if(IS_PROMISED ) q.reject(err);
@@ -697,22 +745,24 @@ AbstractDB.prototype.run = function(callback){
 AbstractDB.prototype.runSync = function(callback){
 
   this.finalizeQuery();
-  var Query = this.query + this.returnIds;
-  callback = typeof callback === 'function' ? callback : function(){};
-
+  var QueryToRun = this.query + this.returnIds;
   var self = this;
-  var ret = self.dbQuerySync(Query);
+  this.reset();
+  callback = typeof callback === 'function' ? callback : function(){};
+  var ret = self.dbQuerySync(QueryToRun);
   self.Rows = ret.Rows;
   self.Error = ret.Error;
   self.results = { error: self.Error(), rows: self.Rows() };
+  callback(self.Error,self.Rows());
   return self;
 };
 
 AbstractDB.prototype.finalizeQuery = function(){
-  var query = this.query.toLowerCase().trim().replace(/\W/gm,"").trim();
+  var querySet = this.query;
+  var queryFinalized = querySet.toLowerCase().trim().replace(/\W/gm,"").trim();
   //console.log("query",query);
-  if ( query.indexOf("insertinto") === 0  || query.indexOf("update"+this.tablename+"set") === 0 || query.indexOf("deletefrom") ===0 ) {
-    if ( this.query.indexOf("RETURNING " + this.tablename + "_id") === -1 && this.schema.indexOf(this.tablename + "_id") > -1 ) {
+  if ( queryFinalized.indexOf("insertinto") === 0  || queryFinalized.indexOf("update"+this.tablename+"set") === 0 || queryFinalized.indexOf("deletefrom") ===0 ) {
+    if ( querySet.indexOf("RETURNING " + this.tablename + "_id") === -1 && this.schema.indexOf(this.tablename + "_id") > -1 ) {
       this.returnIds = " RETURNING " + this.tablename + "_id ";
     } else {
       this.returnIds = " RETURNING * ";
@@ -724,8 +774,8 @@ AbstractDB.prototype.finalizeQuery = function(){
 AbstractDB.prototype.printQuery = function(ovrLog){
   //abstractDBLog("this =>",this);
   this.finalizeQuery();
-  var Query = this.query + this.returnIds;
-  var queryLog = "\nquery => " + Query + "\n";
+  var QueryToPrint = this.query + this.returnIds;
+  var queryLog = "\nquery => " + QueryToPrint + "\n";
   if( ! ovrLog ){
     abstractDBLog(queryLog);
     return this;
@@ -738,7 +788,7 @@ AbstractDB.prototype.reset = function(callback){
   callback = typeof callback === 'function' ? callback : function(){};
   this.query = '';
   this.primaryKeyLkup = false;
-  this.whereQuery = null;
+  this.whereQuery = '';
   this.deleting = false;
   this.inserting = false;
   this.updating = false;

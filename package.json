@@ -1,6 +1,6 @@
 {
   "name": "pg-jc",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Node.js ORM-style Module",
   "engines": {
     "node": "0.12.2"
@@ -26,7 +26,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git@bitbucket.org:jcallu/pg-jc.git"
+    "url": "git+ssh://git@bitbucket.org/jcallu/pg-jc.git"
   },
   "keywords": [
     "postgresql",
@@ -40,5 +40,7 @@
     "orm"
   ],
   "license": "ISC",
-  "readme": "See README.md for installation instructions"
+  "homepage": "https://bitbucket.org/jcallu/pg-jc#readme",
+  "main": "index.js",
+  "devDependencies": {}
 }
