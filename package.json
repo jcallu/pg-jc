@@ -1,9 +1,9 @@
 {
   "name": "pg-jc",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "Node.js ORM-style Module",
   "engines": {
-    "node": "0.12.13"
+    "node": "4.4.3"
   },
   "scripts": {
     "test": "./test.js"
@@ -17,9 +17,9 @@
   ],
   "author": "Jacinto Callu",
   "dependencies": {
-    "async": "^1.5.2",
+    "async": "^2.0.0-rc.3",
     "inflection": "^1.10.0",
-    "lodash": "^3.10.1",
+    "lodash": "^4.11.2",
     "moment-timezone": "^0.5.4",
     "pg": "^4.5.5",
     "pg-native": "^1.10.0",
@@ -31,14 +31,15 @@
   },
   "keywords": [
     "postgresql",
-    "transaction",
-    "promise",
+    "postgres transaction",
+    "postgres promise",
+    "psql promise",
     "postgresql",
     "psql",
     "database",
     "pool",
     "node",
-    "orm"
+    "postgresql orm"
   ],
   "license": "ISC",
   "homepage": "https://bitbucket.org/jcallu/pg-jc#readme",
