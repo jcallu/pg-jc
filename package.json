@@ -1,6 +1,6 @@
 {
   "name": "pg-jc",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "Node.js ORM-style Module",
   "engines": {
     "node": "0.12.13"
