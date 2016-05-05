@@ -1,9 +1,9 @@
 {
   "name": "pg-jc",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "Node.js ORM-style Module",
   "engines": {
-    "node": "0.12.2"
+    "node": "0.12.13"
   },
   "scripts": {
     "test": "./test.js"
@@ -17,11 +17,12 @@
   ],
   "author": "Jacinto Callu",
   "dependencies": {
-    "async": "^1.4.2",
-    "inflection": "^1.7.1",
+    "async": "^1.5.2",
+    "inflection": "^1.10.0",
     "lodash": "^3.10.1",
-    "pg": "^4.4.1",
-    "pg-native": "^1.8.1",
+    "moment-timezone": "^0.5.4",
+    "pg": "^4.5.5",
+    "pg-native": "^1.10.0",
     "q": "^1.4.1"
   },
   "repository": {

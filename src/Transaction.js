@@ -14,7 +14,8 @@ function Transaction (databaseName,databaseAddr){
 
   var client = new connection.DBClient.Client(connection.conString(this.databaseName,this.databaseAddr));
   var dbtmp = {};
-  process[databaseName.toUpperCase()+"_TABLES_SCHEMA_CACHE"].forEach(function(value,tablename){
+  var dbCached = process[databaseName.toUpperCase()+"_TABLES_SCHEMA_CACHE"] || {}
+  dbCached.forEach(function(value,tablename){
     dbtmp[tablename] = new AbstractTable(tablename,databaseName,databaseAddr,client);
   });
 
