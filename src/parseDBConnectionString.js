@@ -1,6 +1,7 @@
 var url = require('url');
 
 module.exports = function parse(str) {
+  if( typeof str !== 'string') return;
   var config;
   if(str.charAt(0) === '/') {
     config = str.split(' ');
