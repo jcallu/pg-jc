@@ -3,8 +3,7 @@
 var Q = require('q');
 var _ = require('lodash');
 var moment = require('moment-timezone')
-var d = new Date(); // or whatever date you have
-var tzName = d.toLocaleString('en', {timeZoneName:'short'}).split(' ').pop();
+var tzName = process.env.TIMEZONE || "America/Los_Angeles"
 /** Constants **/
 var DEBUG = process.env.PGJC_DEBUG == 'true';
 process.env.PGJC_POOL_SIZE = process.env.PGJC_POOL_SIZE || process.env.PG_POOL_SIZE || 10;
