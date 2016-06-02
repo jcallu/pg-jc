@@ -1,3 +1,6 @@
 node_modules
 src/schemas/*.json
 npm-debug.log
+.DS_Store
+.ftpconfig
+test

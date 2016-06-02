@@ -1,19 +1,23 @@
-var paths = {}
+
 var PG_JC_HOME = __dirname
 var _ = require('lodash');
 var async = require('async');
 var Q = require('q');
 var fs = require('fs');
-var NODE_ENV = process.env.NODE_ENV || 'development';
-var DB_LOG = process.env.PG_JC_LOG == "true" || process.env.DB_LOG == 'true';
+var config = require("./config");
+var inflection = require('inflection');
+
+var NODE_ENV = config.ENV;
+var DB_LOG = config.DB_LOG_ON;
 var utilityFunctions = {
   console: { asyncLog: function(){
       var args = _.values(arguments);
       setTimeout(function(){
         console.log.apply(this,args)
-      },22)
+      },10)
     }
-  }, escapeApostrophes: function(str){
+  },
+  escapeApostrophes: function(str){
     if( typeof str != 'string' ){
       throw "not a string"
     }
@@ -23,18 +27,31 @@ var utilityFunctions = {
 var abstractDBLog = NODE_ENV !== 'production' && DB_LOG ? utilityFunctions.console.asyncLog : function(){};
 
 
-var inflection = require('inflection');
 var DUPLICATE_KEY_VIOLATION = '23505';
+var FS_DATABASE_SCHEMA_SUFFIX = "_TABLES_SCHEMA_CACHE";
 
-var CACHE = "_TABLES_SCHEMA_CACHE";
-
-function schemaQuery(dbName){
-  return "select table_name as tablename, array_agg(column_name) as schema from (SELECT ist.table_name, isc.column_name::text "+
-    "FROM information_schema.tables ist "+
-    "inner join information_schema.columns isc on isc.table_name = ist.table_name "+
-    "WHERE ist.table_catalog = '"+dbName+"' and ist.table_type = 'BASE TABLE' and ist.table_schema = 'public' "+
-    "group by ist.table_name,isc.column_name::text "+
-    "ORDER BY ist.table_name::text,isc.column_name::text) s group by 1;";
+function schemaQuery(dbName,tableSchema){
+  tableSchema = tableSchema ? tableSchema : 'public'
+  return "select * from (select tt.table_name as tablename, array_agg( \
+(select row_to_json(_) from ( select col.column_name,col.data_type, \
+case when col.data_type in ('text','varchar','character varying') then 'string' \
+when col.data_type in ('bigint','integer','numberic','real','double precision') then 'number' \
+when col.data_type in ('timestamp without time zone','timestamp with time zone') then 'time' \
+when col.data_type in ('date') then 'date' \
+when col.data_type in ('boolean') then 'boolean' \
+when col.data_type in ('json','ARRAY') then 'object' \
+end as js_type, \
+case when col.column_name = ccu.column_name then true else false end as is_primary_key \
+) as _ ) ) as tableschema \
+from information_schema.tables tt \
+join information_schema.columns col on col.table_name = tt.table_name \
+left join information_schema.table_constraints tc on tc.table_name = tt.table_name and tc.constraint_type = 'PRIMARY KEY' \
+left JOIN information_schema.constraint_column_usage AS ccu ON tc.constraint_name = ccu.constraint_name \
+where tt.table_catalog = '"+dbName+"' \
+and tt.table_schema = '"+tableSchema+"' \
+group by tt.table_name \
+) tables \
+order by tables.tablename;";
 }
 function initErrorHandler(e){
   if(e){
@@ -46,13 +63,20 @@ function isCacheNotSet(cacheKey){
   return _.keys( ( process[cacheKey] || {} ) ).length === 0;
 }
 
+function getConnectionFSCacheKey(dbName,dbAddr,dbPort,dbUser){
+  var filename = dbName+"_"+dbAddr.replace(/\./g,"-")+"_"+dbPort+"_"+dbUser + FS_DATABASE_SCHEMA_SUFFIX;
+  filename = filename.toUpperCase()
+  return filename;
+}
+
 
 function createVirtualSchema(dbName,dbAddr,dbPasswd,dbPort,dbUser,dbConnection){
   // console.log("dbName,dbAddr",dbName,dbAddr)
   // var start = process.hrtime();
   var DB = dbName.toUpperCase();
-  var CACHE_KEY = DB+CACHE;
-  var schemaTmp;
+  var CACHE_KEY = getConnectionFSCacheKey(dbName,dbAddr,dbPort,dbUser);
+  // console.log("CACHE_KEY",CACHE_KEY)
+  var schemaTmp = {};
   // console.log("process[CACHE_KEY]",process[CACHE_KEY])
   var setCache = isCacheNotSet(CACHE_KEY)
   // console.log("setCache",setCache)
@@ -60,10 +84,10 @@ function createVirtualSchema(dbName,dbAddr,dbPasswd,dbPort,dbUser,dbConnection){
     process[CACHE_KEY] = process[CACHE_KEY] || {};
     var data = dbConnection.querySync("select 1 first_db_call_test, '"+dbConnection.databaseAddress+"' as address,'"+dbConnection.databaseName+"' as database")
     initErrorHandler(data.error)
-    schemaTmp = dbConnection.querySync(schemaQuery(dbName));
+    try { schemaTmp = dbConnection.querySync(schemaQuery(dbName)); } catch(e){ console.error(e.stack); }
     // dbConnection.query("select 1");
     // console.log("schemaTmp",schemaTmp)
-    var pathToFileCache = PG_JC_HOME+'/schemas/'+CACHE_KEY+'.json';
+    var pathToFileCache = PG_JC_HOME + '/schemas/'+CACHE_KEY+'.json';
     if( schemaTmp.error || !( schemaTmp instanceof Object ) || ! ( schemaTmp.rows instanceof Array ) || schemaTmp.rows.length === 0  ){
       var schemaFromFile;
       try {
@@ -78,7 +102,7 @@ function createVirtualSchema(dbName,dbAddr,dbPasswd,dbPort,dbUser,dbConnection){
           if ( err ) console.error("Schema Loading error =>",err);
         }
         fs.writeFileSync(pathToFileCache,JSON.stringify({}))
-        if( NODE_ENV === 'development' ) {
+        if( vgpConfig.ENV === 'development' ) {
           throw err;
         }
       }
@@ -89,9 +113,10 @@ function createVirtualSchema(dbName,dbAddr,dbPasswd,dbPort,dbUser,dbConnection){
       schemaTmp = schemaTmp.rows;
       fs.writeFileSync(pathToFileCache,JSON.stringify(schemaTmp));
     }
-
+    // console.log("process[CACHE_KEY]",process[CACHE_KEY])
     _.each(schemaTmp,function(obj){
-      process[CACHE_KEY][obj.tablename] = obj.schema;
+      // console.log('process[CACHE_KEY][obj.tablename]',obj.tablename,process[CACHE_KEY][obj.tablename])
+      process[CACHE_KEY][obj.tablename] = _.cloneDeep( obj.tableschema );
     });
     // dbConnection.logoutSyncClient();
   } else {
@@ -101,7 +126,7 @@ function createVirtualSchema(dbName,dbAddr,dbPasswd,dbPort,dbUser,dbConnection){
   // abstractDBLog("Query took: "+t[0]+":"+t[1].toString().slice(0,2)+"s  => loading schema");
 }
 
-var GenerateWhereObj = function (whereObjOrRawSQL,AND){
+var GenerateWhereObj = function (tableName,tableSchema,whereObjOrRawSQL,AND){
 
   var isRawSQL = typeof whereObjOrRawSQL === 'string' ? true : false;
   var where_CLAUSE = '';
@@ -144,36 +169,83 @@ var GenerateWhereObj = function (whereObjOrRawSQL,AND){
         }
       }
     }
-    else {
+    else if ( whereObjOrRawSQL instanceof Object ){
+      var schemaData = getTableSchemaDataMap(whereObjOrRawSQL,tableSchema)
+      var keys = schemaData.columnNames;
+      var paramsData = schemaData.paramsData;
+      var columnNamesData = schemaData.columnDataMap
 
-     where_CLAUSE = !AND ? " WHERE TRUE " : ''
+
+
+      where_CLAUSE = !AND ? " WHERE TRUE " : ''
       _.forEach(whereObjOrRawSQL, function(value,key){
-        if( _.isNull(value) || _.isUndefined(value) ){
-          where_CLAUSE += " AND " + key + " IS NULL ";
-        }
-        else if( ( key.lastIndexOf('_id') === (key.length-3) || key.trim() === 'score' )   && parseInt(value) > 0  ){
-          where_CLAUSE += " AND " + key + " = "+parseInt(value)+" ";
-        }
-        else if(  value instanceof Object && value instanceof Date ){
-          where_CLAUSE += " AND "+ key +" = '"+ value.toISOString()+"'::TIMESTAMP ";
-        }
-        else if(  value instanceof Object && value.condition ){
-          where_CLAUSE += " AND " + key + " "+ value.condition + " ";
-        }
-        else if( key === 'raw_postgresql' ) {
-          where_CLAUSE += " " + value + " ";
-        }
-        else if(  typeof value === 'boolean' ){
-         where_CLAUSE += " AND " + key + " IS "+ value + " ";
-        }
-        else {
-          try {
-            value = value.toString();
-          } catch(e){
-            console.error(e.stack);
-            value = '';
-          }
-         where_CLAUSE += " AND " + key + " = '" + utilityFunctions.escapeApostrophes(value) + "' ";
+
+        var paramData = columnNamesData[key] || {};
+
+        switch(true){
+          case ( key === 'raw_postgresql' || key === 'raw_sql' ):
+            if( typeof value === 'string' ){
+                where_CLAUSE += " " + value + " ";
+            } else {
+              console.error(new Error(tableName+ " "+key+ " not sql where clause ").stack)
+            }
+            break;
+          case ( value instanceof Object && typeof value.condition === 'string' ):
+            where_CLAUSE += " AND " + key + " "+ value.condition + " ";
+            break;
+          case _.isNull(value) || _.isUndefined(value):
+            where_CLAUSE += " AND " + key + " IS NULL ";
+            break;
+          case ( paramData.js_type == 'number' ):
+            if( !isNaN( parseInt(value) ) ){
+              where_CLAUSE += " AND " + key + " = "+value+" ";
+            } else {
+              console.error(new Error(tableName+ " "+key+ " invalid "+paramData.js_type+" "+value).stack)
+            }
+            break;
+          case ( paramData.js_type == 'date'  ):
+            if( (value instanceof Date) && value !== 'Invalid Date' ){
+              where_CLAUSE += " AND "+ key +" = '"+ value.toISOString()+"'::DATE ";
+            } else if ( typeof value == 'string' && new Date(value) !== 'Invalid Date' ) {
+              value = new Date(value)
+              where_CLAUSE += " AND "+ key +" = '"+ value.toISOString()+"'::DATE ";
+            } else {
+              console.error(new Error(tableName+ " "+key+ " invalid "+paramData.js_type+" "+value).stack)
+            }
+          case ( paramData.js_type == 'time'  ):
+            if( (value instanceof Date) && value !== 'Invalid Date' ){
+              where_CLAUSE += " AND "+ key +" = '"+ value.toISOString()+"'::TIMESTAMP ";
+            } else if ( typeof value == 'string' && new Date(value) !== 'Invalid Date' ) {
+              value = new Date(value)
+              where_CLAUSE += " AND "+ key +" = '"+ value.toISOString()+"'::TIMESTAMP ";
+            } else {
+              console.error(new Error(tableName+ " "+key+ " invalid "+paramData.js_type+" "+value).stack)
+            }
+            break;
+          case ( paramData.js_type == 'object'  ):
+            if( (value instanceof Object || value instanceof Array) ){
+              value = JSON.stringify(value)
+              where_CLAUSE += " AND " + key + " = '" + utilityFunctions.escapeApostrophes(value) + "' ";
+            } else {
+              console.error(new Error(tableName+ " "+key+ " not an "+paramData.js_type+" "+value).stack)
+            }
+            break;
+          case ( paramData.js_type == 'string'  ):
+            if( typeof value === 'string' ){
+              where_CLAUSE += " AND " + key + " = '" + utilityFunctions.escapeApostrophes(value) + "' ";
+            } else {
+              console.error(new Error(tableName+ " "+key+ " not a "+paramData.js_type+" "+value).stack)
+            }
+            break;
+          default:
+            try {
+              value = value.toString();
+            } catch(e){
+              console.error(e.stack);
+              value = '';
+            }
+            where_CLAUSE += " AND " + key + " = '" + utilityFunctions.escapeApostrophes(value) + "' ";
+            break;
         }
       });
     }
@@ -191,7 +263,7 @@ GenerateWhereObj.prototype.getWhere = function(){
 var AbstractTable = function(tablename,databaseName,databaseAddress,databasePassword,databasePort,databaseUser,dbConnection){
   this.abstractTableDb = databaseName;
   var DB = this.abstractTableDb.toUpperCase();
-  var CACHE_KEY = DB+CACHE;
+  var CACHE_KEY = getConnectionFSCacheKey(databaseName,databaseAddress,databasePort,databaseUser);
   this.abstractTableDB = DB;
   this.databaseName = databaseName;
   this.databaseAddress = databaseAddress;
@@ -202,14 +274,15 @@ var AbstractTable = function(tablename,databaseName,databaseAddress,databasePass
     var err = new Error("Abstract Table client property in constructor not an object")
     throw err;
   }
+
   dbConnection.setConnectionParams(databaseName,databaseAddress,databasePassword,databasePort,databaseUser)
   this.PGClient = dbConnection
   createVirtualSchema(databaseName,databaseAddress,databasePassword,databasePort,databaseUser,this.PGClient);
-  this.abstractTableSchema = (process[CACHE_KEY][tablename]) || [];
+  this.abstractTableTableSchema = (process[CACHE_KEY][tablename]) || [];
   this.abstractTableTableName = tablename || undefined;
-  this.abstractTablePrimaryKey = this.abstractTableSchema.indexOf(this.abstractTableTableName+"_id") > -1 ? this.abstractTableTableName+"_id" : undefined;
+  this.abstractTablePrimaryKey = (_(this.abstractTableTableSchema).chain().filter(function(s){ return s.is_primary_key }).compact().head().value() || {}).column_name || null
   this.initializeTable();
-  createDynamicSearchByPrimaryKeyOrForeignKeyIdPrototypes(this.abstractTableSchema);
+  createDynamicSearchByPrimaryKeyOrForeignKeyIdPrototypes(this.abstractTableTableSchema);
 
 };
 
@@ -218,10 +291,10 @@ AbstractTable.prototype.setConnectionParams = function(databaseName,databaseAddr
 }
 
 function createDynamicSearchByPrimaryKeyOrForeignKeyIdPrototypes(schema){
-  var idColumns = _.compact(_.map(schema,function(colName){
-    var endsIn_id =  colName.lastIndexOf('_id') === (colName.length-3) ;
+  var idColumns = _.compact(_.map(schema,function(obj){
+    var endsIn_id =  obj.column_name.lastIndexOf('_id') === (obj.column_name.length-3) ;
     if( endsIn_id  )
-      return { functionId: inflection.camelize(colName), colName: colName };
+      return { functionId: inflection.camelize(obj.column_name), colName: obj.column_name };
     return null;
   }));
   if( idColumns.length=== 0 ){
@@ -234,7 +307,7 @@ function createDynamicSearchByPrimaryKeyOrForeignKeyIdPrototypes(schema){
 
       var camelizedColName = camelizedColObj.colName;
 
-      if( parseInt(idIntegerParam).toString() === 'NaN' ) { this.error = new Error('findBy'+camelizedColObj.functionId + " first and only parameter must be a "+camelizedColName+" integer and it was => " + typeof idIntegerParam );
+      if( ! isNaN( parseInt(idIntegerParam) ) ) { this.error = new Error('findBy'+camelizedColObj.functionId + " first and only parameter must be a "+camelizedColName+" integer and it was => " + typeof idIntegerParam );
       }
 
       this.primaryKeyLkup = camelizedColName && camelizedColName === this.abstractTablePrimaryKey ? true : false;
@@ -306,9 +379,18 @@ AbstractTable.prototype.selectWhere = function(selectWhereParams,whereObjOrRawSQ
   return this.select(selectWhereParams).where(whereObjOrRawSQL);
 };
 
-function externalJoinHelper(obj){
+function externalJoinHelper(obj,schema){
+  // console.log("JOIN ON",obj)
+  var schemaData = getTableSchemaDataMap(obj,schema)
+  var keys = schemaData.columnNames;
+  var paramsData = schemaData.paramsData;
+  var columnNamesData = schemaData.columnDataMap
+
+
   var onCondition = "";
+
   _.forEach(obj,function(value,key){
+    var paramData = columnNamesData[key] || {}
     if( value instanceof Object && typeof value.condition === 'string' ){
       onCondition += " AND "+key+" "+value.condition+" ";
       return;
@@ -326,10 +408,13 @@ function externalJoinHelper(obj){
   return onCondition;
 }
 
+
+
+
 AbstractTable.prototype.join = function(tablesToJoinOnObjs){
   var self = this;
   var DB = self.abstractTableDB;
-  var CACHE_KEY = DB+CACHE
+  var CACHE_KEY = getConnectionFSCacheKey(self.databaseName,self.databaseAddress,self.databasePort,self.databaseUser);
   var rawSql = typeof tablesToJoinOnObjs === 'string' ? tablesToJoinOnObjs : null;
   var joinSQL = '';
   if( rawSql){
@@ -341,20 +426,26 @@ AbstractTable.prototype.join = function(tablesToJoinOnObjs){
     }
     var thisTableName = this.abstractTableTableName;
     _.forEach(tables,function(obj,tablename){
-      var schema = process[CACHE_KEY][tablename];
+      var schema = process[CACHE_KEY][tablename] || [];
+
+      if( schema.length == 0 ){
+          console.log("schema",schema,tablename)
+      }
+
+
       obj.on = obj.on instanceof Array ? obj.on : [];
       var tableName = tablename;
       var alias = obj.as || tablename;
       var onArray = _(obj.on).chain().map(function(joinOnColumnsOrObj){
-        if( typeof joinOnColumnsOrObj === 'string' && schema.indexOf(joinOnColumnsOrObj) > -1 ){
+        if( typeof joinOnColumnsOrObj === 'string' && _(schema).chain().filter(function(o){ return joinOnColumnsOrObj.indexOf(o.column_name) === joinOnColumnsOrObj.replace(o.column_name,"").length  }).compact().head().value() instanceof Object ){
           return " AND "+alias+"."+joinOnColumnsOrObj+" = " +thisTableName+"."+joinOnColumnsOrObj+" ";
         }
         if( joinOnColumnsOrObj instanceof Object && _.keys(joinOnColumnsOrObj).length >= 1 ){
-          return externalJoinHelper(joinOnColumnsOrObj);
+          return externalJoinHelper(joinOnColumnsOrObj,schema);
         }
         return null;
       }).compact().value();
-      //console.log("on Array",onArray)
+      // console.log("on Array",onArray)
       var onTrue = '';
       if( onArray.length === 0 ) onArray = ['false'];
       if( onArray.length > 0 ) onTrue = 'TRUE ';
@@ -379,75 +470,111 @@ AbstractTable.prototype.insert = function(optionalParams){
   return this;
 };
 
+
+
+function getTableSchemaDataMap(params,schema){
+  var self = this;
+  var tableschema = schema || self.abstractTableTableSchema || []
+  var retObj = {}
+  var paramObj = {}
+  var columnNames = [];
+  _(_.keys(params)).chain().map(function(col){
+    var colObj =  _(tableschema).chain().filter(function(o){ return col.indexOf(o.column_name) === col.replace(o.column_name,"").length }).compact().head().value()
+    var isObj = colObj instanceof Object
+    if( isObj ) {
+      retObj[col] = colObj
+      columnNames.push(colObj.column_name);
+      paramObj[col] = params[col];
+    }
+  }).compact().value()
+
+  var ret =  { paramsData: paramObj, columnNames: columnNames,  columnDataMap: retObj,  };
+
+  // console.log("ret",ret)
+  return ret;
+}
+
+AbstractTable.prototype.getTableSchemaDataMap = getTableSchemaDataMap
 AbstractTable.prototype.values = function(params){
   var self = this;
-  var table_id = self.abstractTableTableName + "_id";
+
   var count = 1;
-  var schema = self.abstractTableSchema;
-  var keys = _.filter(_.keys(params), function(col){
-    return schema.indexOf(col) > -1;
-  });
+
+  var schemaData = self.getTableSchemaDataMap.bind(self)(params)
+  var keys = schemaData.columnNames;
+  var paramsData = schemaData.paramsData;
+  var columnNamesData = schemaData.columnDataMap
+
+
   if( keys.length === 0 )  {  this.error = new Error("No insert values passed"); return this; }
   var queryParams = "";
   var columnNames = [];
   var selectValuesAs = [];
-  var columnsAndData = _.map(keys, function(key){return params[key]; });
+
   _.forEach(params, function(value,key){
     try {
       if( !key ) return;
+      var paramData = columnNamesData[key] || {}
       var ofTypeColumn = '';
       var fieldValue = '';
 
-      if( _.isNull(value) || _.isUndefined(value) ){
-        ofTypeColumn = 'null';
-      }
-      else if( value instanceof Object && typeof value.condition === 'string' ){
-        ofTypeColumn = 'pgsql_condition';
-
-      }
-      else if( value instanceof Object && value.pgsql_function instanceof Object ){
-        var functionToRun = _.keys(value.pgsql_function)[0]  || "THROW_AN_ERROR";
-        var pgFunctionInputs = [];
-        if (!functionToRun && typeof functionToRun !== String) {
-          console.error("functionToRun in Values is not a String or is undefined");
-        }
-        var values = _.values(value.pgsql_function)[0] || [];
-        if (!values && (typeof functionToRun !== Array || values.length === 0)) {
-          console.error("values in Values is not an Array or is length of zero");
-        }
-        pgFunctionInputs = _.map(values,function(val){
-          if ( typeof val === 'string' )
-            return "'" + utilityFunctions.escapeApostrophes(val) + "'";
-          else
-            return val;
-        });
-        ofTypeColumn = 'pgsql_function';
-        value = functionToRun + "("+pgFunctionInputs.join(',')+") ";
-      }
-      else if( value instanceof Object && value instanceof Date ){
-        ofTypeColumn = 'date';
-        //if( !value ){
-        //  ofTypeColumn = 'null';
-        //  value = null;
-        //}
-      }
-      else if( ( key.lastIndexOf('_id') === (key.length-3) || key.trim() === 'score' )   && parseInt(value) > 0 )  {
-        ofTypeColumn = 'int' ;
-      }
-      else if( typeof value === 'boolean' ){
-        ofTypeColumn = 'bool';
-      }
-      else if( typeof value === 'string' ){
-        ofTypeColumn = 'text';
-        value = utilityFunctions.escapeApostrophes(value);
-      } else {
-        try {
-          value = value.toString();
-          value = utilityFunctions.escapeApostrophes(value);
-          ofTypeColumn = 'text';
-        } catch(e){
+      switch(true){
+        case ( _.isNull(value) || _.isUndefined(value) ):
           ofTypeColumn = 'null';
-        }
+          break;
+        case ( value instanceof Object && typeof value.condition === 'string' ):
+          ofTypeColumn = 'pgsql_condition';
+          break;
+        case ( value instanceof Object && value.pgsql_function instanceof Object ):
+          var functionToRun = _.keys(value.pgsql_function)[0]  || "THROW_AN_ERROR";
+          var pgFunctionInputs = [];
+          if (!functionToRun && typeof functionToRun !== String) {
+            console.error("functionToRun in Values is not a String or is undefined");
+          }
+          var values = _.values(value.pgsql_function)[0] || [];
+          if (!values && (typeof functionToRun !== Array || values.length === 0)) {
+            console.error("values in Values is not an Array or is length of zero");
+          }
+          pgFunctionInputs = _.map(values,function(val){
+            if ( typeof val === 'string' )
+              return "'" + utilityFunctions.escapeApostrophes(val) + "'";
+            else
+              return val;
+          });
+          ofTypeColumn = 'pgsql_function';
+          value = functionToRun + "("+pgFunctionInputs.join(',')+") ";
+          break;
+        case  ( paramData.js_type === 'object' && (value instanceof Object || value instanceof Array ) ):
+          ofTypeColumn = 'object';
+          value = utilityFunctions.escapeApostrophes( JSON.stringify(value) );
+          break;
+        case ( paramData.js_type === 'time' && ( value instanceof Date ) ):
+          ofTypeColumn = 'date';
+          break;
+        case ( paramData.js_type === 'date' && ( new Date(value) instanceof Date) ):
+          value = new Date(value);
+          ofTypeColumn = 'date';
+          break;
+        case ( paramData.js_type === 'number' && !isNaN(parseInt(value)) ):
+          ofTypeColumn = 'num' ;
+          break;
+        case ( paramData.js_type === 'boolean'  ):
+          ofTypeColumn = 'bool';
+          break;
+        case ( paramData.js_type === 'string' ):
+          ofTypeColumn = 'text';
+          value = utilityFunctions.escapeApostrophes(value);
+          break;
+        default:
+          try {
+            value = value.toString();
+            value = utilityFunctions.escapeApostrophes(value);
+            ofTypeColumn = 'text';
+          } catch(e){
+            console.error(e.stack)
+            ofTypeColumn = 'null';
+          }
+          break;
       }
       //abstractDBLog("INSERT VALUES => type="+ofTypeColumn+" , value="+value+", column_name="+key);
       switch(ofTypeColumn){
@@ -463,9 +590,9 @@ AbstractTable.prototype.values = function(params){
           selectValuesAs.push(" "+fieldValue+" as " + key+" ");
           queryParams += " AND " + key + " IS " + fieldValue + " ";
           break;
-        case 'int':
+        case 'num':
           columnNames.push(key);
-          fieldValue = parseInt(value) || null;
+          fieldValue = value;
           selectValuesAs.push(" "+fieldValue+" as " + key+" ");
           queryParams += " AND " + key + " = " + fieldValue + " ";
           break;
@@ -475,6 +602,7 @@ AbstractTable.prototype.values = function(params){
           selectValuesAs.push(" null as " + key+" ");
           queryParams += " AND " + key + " IS NULL ";
           break;
+        case 'object':
         case 'text':
           columnNames.push(key);
           fieldValue = value;
@@ -499,6 +627,7 @@ AbstractTable.prototype.values = function(params){
           queryParams += " AND " + key + " " +comparisonOperator+ " " + fieldValue + " ";
           break;
         default:
+          console.error(new Error(self.abstractTableTableName+ " "+key+ " invalid entry ").stack)
           break;
       }
     } catch(e){
@@ -550,7 +679,7 @@ AbstractTable.prototype.update = function(updateObjOrRawSQL){
 
 
 AbstractTable.prototype.set = function(updateObjOrRawSQL){
-
+  var self = this;
   var isRawSQL = typeof selectParams === 'string' ? true : false;
   if( isRawSQL ){
     var rawSQLStr = updateObjOrRawSQL.toLowerCase().trim().replace(/(\s{1,})/gm," ");
@@ -559,33 +688,96 @@ AbstractTable.prototype.set = function(updateObjOrRawSQL){
     else
       this.abstractTableQuery += updateObjOrRawSQL.trim();
     return this;
-  } else {
+  } else if ( updateObjOrRawSQL instanceof Object ){
     var sql = "SET ";
+    var schemaData = this.getTableSchemaDataMap.bind(this)(updateObjOrRawSQL)
+    var keys = schemaData.columnNames;
+    var paramsData = schemaData.paramsData;
+    var columnNamesData = schemaData.columnDataMap
+
     _.forEach(updateObjOrRawSQL,function(value,key){
-      if( _.isNull(value) || _.isUndefined(value) )
-        sql +=  key + " = NULL " + " , ";
-      else if(  value instanceof Object && typeof value.condition === 'string' )
-        sql += key + " "+ value.condition + " , ";
-      else if(  value instanceof Object && value instanceof Date ){
-        sql += key + " = '"+ value.toISOString() + "'::TIMESTAMP , ";
-      }
-      else if( typeof value === 'boolean' ) {
-        sql += key + " = " + value + " , ";
-      }
-      else if ( ( key.lastIndexOf('_id') === (key.length-3) || key.trim() === 'score' )   && parseInt(value) > 0 ) {
-        sql += key + " = "+ parseInt(value) + " , ";
-      }
-      else {
-        try {
-          value = value.toString();
-        } catch(e) { value = ''; }
-        sql += key + " = " + " '"+utilityFunctions.escapeApostrophes(value)+"' " + " , ";
+
+      var paramData = columnNamesData[key] || {}
+
+      switch (true) {
+        case ( _.isNull(value) || _.isUndefined(value) ):
+          sql +=  key + " = NULL " + " , ";
+          break;
+        case (  value instanceof Object && typeof value.condition === 'string' ):
+          sql += key + " "+ value.condition + " , ";
+          break;
+        case (  paramData.js_type === 'date'   ):
+          if(value instanceof Date && value != "Invalid Date"){
+            sql += key + " = '"+ value.toISOString() + "'::DATE , ";
+          }
+          else if (typeof value === 'string' && new Date(value) != "Invalid Date" ){
+            value = new Date(value)
+            sql += key + " = '"+ value.toISOString() + "'::DATE , ";
+          } else {
+            console.error(new Error(self.abstractTableTableName+ " "+key+ " invalid  " + paramData.js_type + " " + value).stack)
+          }
+          break;
+        case (  paramData.js_type === 'time'   ):
+          if(value instanceof Date && value != "Invalid Date"){
+            sql += key + " = '"+ value.toISOString() + "'::TIMESTAMP , ";
+          }
+          else if (typeof value === 'string' && new Date(value) != "Invalid Date" ){
+            value = new Date(value)
+            sql += key + " = '"+ value.toISOString() + "'::TIMESTAMP , ";
+          }
+          else {
+            console.error(new Error(self.abstractTableTableName+ " "+key+ " invalid  " + paramData.js_type + " " + value).stack)
+          }
+          break;
+        case( paramData.js_type === 'boolean' ):
+          if( typeof value === 'boolean' ) {
+            sql += key + " = " + value + " , ";
+          } else {
+            console.error(new Error(self.abstractTableTableName+ " "+key+ " invalid  " + paramData.js_type + " " + value).stack)
+          }
+          break;
+
+        case ( paramData.js_type === 'number' ):
+          if( ! isNaN( parseInt(value) ) ){
+              sql += key + " = "+ value + " , ";
+          } else {
+            console.error(new Error(self.abstractTableTableName+ " "+key+ " invalid  " + paramData.js_type + " " + value).stack)
+          }
+          break;
+        case ( paramData.js_type === 'object' ):
+          if( (value instanceof Object || value instanceof Array) ){
+              value = JSON.stringify(value)
+              value = utilityFunctions.escapeApostrophes(value)
+              sql += key + " = " + " '"+utilityFunctions.escapeApostrophes(value)+"' " + " , ";
+          } else if( typeof value === 'string' ){
+            value = utilityFunctions.escapeApostrophes(value)
+            sql += key + " = " + " '"+utilityFunctions.escapeApostrophes(value)+"' " + " , ";
+          } else {
+            console.error(new Error(self.abstractTableTableName+ " "+key+ " invalid  " + paramData.js_type + " " + value).stack)
+          }
+          break;
+        case ( paramData.js_type === 'string' ):
+          if( typeof value === 'string' ){
+              value = utilityFunctions.escapeApostrophes(value)
+              sql += key + " = " + " '"+utilityFunctions.escapeApostrophes(value)+"' " + " , ";
+          } else {
+            console.error(new Error(self.abstractTableTableName+ " "+key+ " invalid  " + paramData.js_type + " " + value).stack)
+          }
+          break;
+        default:
+          try {
+            value = value.toString();
+          } catch(e) { value = ''; }
+          sql += key + " = " + " '"+utilityFunctions.escapeApostrophes(value)+"' " + " , ";
+          break;
       }
     });
     sql = sql.slice(0, sql.lastIndexOf(" , "));
     this.abstractTableQuery += sql;
-    return this;
+
   }
+
+  return this;
 };
 
 
@@ -599,7 +791,7 @@ AbstractTable.prototype.deleteFrom = function(){
 
 AbstractTable.prototype.and = function(whereObjOrRawSQL){
   var self = this;
-  var generatedWhereClause = new GenerateWhereObj(whereObjOrRawSQL,true);
+  var generatedWhereClause = new GenerateWhereObj(self.abstractTableTableName,self.abstractTableTableSchema,whereObjOrRawSQL,true);
   var whereQueryGenerated = generatedWhereClause.getWhere();
   //console.log("whereQueryGenerated",whereQueryGenerated)
   this.abstractTableWhere += ' '+whereQueryGenerated+' '
@@ -608,7 +800,7 @@ AbstractTable.prototype.and = function(whereObjOrRawSQL){
 }
 
 AbstractTable.prototype.where = function(whereObjOrRawSQL){
-
+  var self = this;
   var selectTmp = this.abstractTableQuery.toLowerCase().trim().replace(/(\s{1,})/gm," ");
   if( !selectTmp && selectTmp.indexOf('select') === -1 && selectTmp.indexOf('update '+this.abstractTableTableName) === -1  && selectTmp.indexOf('delete from') === -1  ) {
     this.abstractTableQuery = "SELECT * FROM "+this.abstractTableTableName + " "+this.abstractTableTableName+ " ";
@@ -616,7 +808,7 @@ AbstractTable.prototype.where = function(whereObjOrRawSQL){
   if( ! whereObjOrRawSQL ){
     this.primaryKeyLkup = false;
   }
-  var generatedWhereClause = new GenerateWhereObj(whereObjOrRawSQL);
+  var generatedWhereClause = new GenerateWhereObj(self.abstractTableTableName,self.abstractTableTableSchema,whereObjOrRawSQL);
   var whereQueryGenerated = generatedWhereClause.getWhere();
   //console.log("whereQueryGenerated",whereQueryGenerated);
   if( typeof whereQueryGenerated === 'string' && whereQueryGenerated.length > 7 && this.deleting ){ // unlocking delete safety
@@ -670,6 +862,7 @@ AbstractTable.prototype.AndNotExists = function(tableNameExists,onColumnIds,wher
  *  @usage .AndExists('clean_title',null,{source_name:'common-sense',source_key:'avatar'},true)
  */
 AbstractTable.prototype.AndExists = function(tableNameExists,onColumnIds,whereExistsObjOrSQL,NOT){
+  var self = this;
   NOT = typeof NOT === 'boolean' && !NOT ? " NOT " : "";
   onColumnIds = _.isNull(onColumnIds) || _.isNull(onColumnIds) ? [] : onColumnIds;
   onColumnIds = onColumnIds instanceof Array ? onColumnIds : [onColumnIds];
@@ -680,7 +873,7 @@ AbstractTable.prototype.AndExists = function(tableNameExists,onColumnIds,whereEx
 
   }
 
-  var whereQuery = whereExistsObjOrSQL ? ( new GenerateWhereObj(whereExistsObjOrSQL) ).getWhere() : ' WHERE TRUE ';
+  var whereQuery = whereExistsObjOrSQL ? ( new GenerateWhereObj(self.abstractTableTableName,self.abstractTableTableSchema,whereExistsObjOrSQL) ).getWhere() : ' WHERE TRUE ';
   var mainTableName = this.abstractTableTableName;
   var whereOnColumnIdsAnd = onColumnIds.length > 0 ? " AND " : " ";
   whereQuery =  "AND "+NOT+" EXISTS (select 1 from "+tableNameExists+ " "+tableNameExists+" "+
@@ -841,8 +1034,8 @@ AbstractTable.prototype.finalizeQuery = function(){
       this.abstractTableQuery = query.substring(0,query.length-1).trim()
     }
     // console.log("\nthis.abstractTableTableName",this.abstractTableTableName)
-    if ( queryFinalized.indexOf("returning " + this.abstractTableTableName + "_id") === -1 && this.abstractTableSchema.indexOf(this.abstractTableTableName + "_id") > -1 ) {
-      this.returnIds = " RETURNING " + this.abstractTableTableName + "_id ";
+    if ( ! _.isNull ( this.abstractTablePrimaryKey ) ) {
+      this.returnIds = " RETURNING " + this.abstractTablePrimaryKey;
     }
     else if ( queryFinalized.indexOf("returning ") == -1 ) {
       this.returnIds = " RETURNING * ";
@@ -907,7 +1100,7 @@ AbstractTable.prototype.upsert = function(setParams,whereParams,callback){
   var tableNameId = "*";
   var ret = [];
   try {
-    tableNameId = self.abstractTableSchema.indexOf(self.abstractTableTableName+"_id") > -1 ? self.abstractTableTableName+"_id" : "*";
+    tableNameId = self.abstractTablePrimaryKey || "*"
   } catch(e){
     err = e;
   }
@@ -978,11 +1171,11 @@ AbstractTable.prototype.upsertUsingColumnValues = function(setParams,whereParams
     err = new Error("Can only insert or update object params")
   }
 
+
   var tableNameId = "*";
   var ret = [];
-
   try {
-    tableNameId = self.abstractTableSchema.indexOf(self.abstractTableTableName+"_id") > -1 ? self.abstractTableTableName+"_id" : "*";
+    tableNameId = self.abstractTablePrimaryKey || "*"
   } catch(e){
     err = e;
   }
@@ -1043,3 +1236,4 @@ AbstractTable.prototype.upsertUsingColumnValues = function(setParams,whereParams
 
 module.exports = AbstractTable;
 module.exports.createVirtualSchema = createVirtualSchema
+module.exports.getConnectionFSCacheKey = getConnectionFSCacheKey;

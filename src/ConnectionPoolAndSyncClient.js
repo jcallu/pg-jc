@@ -3,54 +3,33 @@
 var Q = require('q');
 var _ = require('lodash');
 var moment = require('moment-timezone')
-var tzName = process.env.TIMEZONE || "America/Los_Angeles"
-/** Constants **/
-var DEBUG = process.env.PGJC_DEBUG == 'true';
-process.env.PGJC_POOL_SIZE = process.env.PGJC_POOL_SIZE || process.env.PG_POOL_SIZE || 10;
-process.env.PGJC_NODE_ENV = process.env.ENV || process.env.NODE_ENV || 'development';
-process.env.PGJC_REAP_INTERVAL_MILLIS = process.env.PGJC_REAP_INTERVAL_MILLIS || process.env.REAP_INTERVAL_MILLIS || 1000;
-process.env.PGJC_POOL_IDLE_TIMEOUT = process.env.PGJC_POOL_IDLE_TIMEOUT || process.env.POOL_IDLE_TIMEOUT || 3e4;
-process.env.PGJC_DB_LOG_SLOW = process.env.DB_LOG_SLOW || process.env.PGJC_DB_LOG_SLOW || false;
-process.env.PGJC_DB_LOG = process.env.DB_LOG || process.env.PGJC_DB_LOG || false;
-process.env.PGJC_DB_LOG_CONNECTIONS = process.env.PGJC_DB_LOG_CONNECTIONS || false;
-switch(DEBUG){
-  case 'debug':
-    process.env.PGJC_DB_LOG_SLOW = process.env.DB_LOG_SLOW || process.env.PGJC_DB_LOG_SLOW || 'true';
-    process.env.PGJC_DB_LOG = process.env.DB_LOG || process.env.PGJC_DB_LOG || 'true'
-    process.env.PGJC_DB_LOG_CONNECTIONS = process.env.PGJC_DB_LOG_CONNECTIONS || 'true';
-    break;
-  default:
-    break;
-}
-var LOG_CONNECTIONS = process.env.PGJC_DB_LOG_CONNECTIONS == 'true';
-var PG_POOL_SIZE = process.env.PGJC_POOL_SIZE;
-var NODE_ENV = process.env.PGJC_NODE_ENV == 'true';
-var DB_LOG_ON = process.env.PGJC_DB_LOG == 'true'
-var DB_LOG_SLOW_QUERIES_ON = process.env.PGJC_DB_LOG_SLOW == 'true'
-var IS_DEV_ENV =  NODE_ENV === 'development'
 
+/** Constants **/
+var config = require('./config.js')
+var tzName = config.TIMEZONE;
 var PGNativeAsync = require('pg').native
 var PGNativeSync = require('pg-native');
 var pg = {};//PGNativeAsync;
 var pgSync = {};//new PGNativeSync();
-
+var pgData = {}
 var defaults = {
-  reapIntervalMillis: process.env.PGJC_REAP_INTERVAL_MILLIS || 1000,
-  poolIdleTimeout: process.env.PGJC_POOL_IDLE_TIMEOUT ||  3e4,
-  poolSize: PG_POOL_SIZE,
+  reapIntervalMillis: config.PGJC_REAP_INTERVAL_MILLIS || 1000,
+  poolIdleTimeout: config.PGJC_POOL_IDLE_TIMEOUT ||  3e4,
+  poolSize: config.PG_POOL_SIZE,
   parseInt8: parseInt,
-  DB_CONNECTION_ID: pg.DB_CONNECTION_ID>=0 ? pg.DB_CONNECTION_ID : 1
+  DB_CONNECTION_ID: pgData.DB_CONNECTION_ID>=0 ? pgData.DB_CONNECTION_ID : 1
 }
-
+var LOG_CONNECTIONS = config.LOG_CONNECTIONS;
 var SYNC_LOGOUT_TIMEOUT = defaults.poolIdleTimeout;
-
+var DB_LOG_ON = config.DB_LOG_ON
+var DB_LOG_SLOW_QUERIES_ON = config.DB_LOG_SLOW_QUERIES_ON
 function newPGClientAsync(){
   pg = PGNativeAsync;
   pg.defaults.reapIntervalMillis = defaults.reapIntervalMillis; // check to kill every 5 seconds
   pg.defaults.poolIdleTimeout = defaults.poolIdleTimeout; // die after 1 minute
   pg.defaults.poolSize = defaults.poolSize;
   pg.defaults.parseInt8 = defaults.parseInt8;
-  pg.DB_CONNECTION_ID = defaults.DB_CONNECTION_ID;
+  pgData.DB_CONNECTION_ID = defaults.DB_CONNECTION_ID;
   if( pg.listeners('error').length === 0 ){
     pg.on('error',function(e){
       console.error("FAILURE - pg module crashed ",e.stack)
@@ -79,7 +58,7 @@ function DBConnection(databaseName,databaseAddress,databasePassword,databasePort
   this.setConnectionParams(databaseName,databaseAddress,databasePassword,databasePort,databaseUser);
   this.pgClientSyncIntervalTimer = 0;
   this.pgClientDefaults = _.cloneDeep(defaults);
-  this.clientConnectionID = ( parseInt(pg.DB_CONNECTION_ID) >= 1 ? parseInt(pg.DB_CONNECTION_ID) : 1 );
+  this.clientConnectionID = ( parseInt(pgData.DB_CONNECTION_ID) >= 1 ? parseInt(pgData.DB_CONNECTION_ID) : 1 );
 }
 
 
@@ -121,7 +100,7 @@ DBConnection.prototype.PGNewClientAsync = function(){
     this.logoutAsyncClient()
     newPGClientAsync()
   }
-  if( LOG_CONNECTIONS ) console.log(this.databaseName,"PG Client Async Size = " + pg.defaults.poolSize + " :  DB Client " + this.clientConnectionID + "  Connected",this.databaseAddress,this.databasePort);
+  if(  LOG_CONNECTIONS != false ) console.log(this.databaseName,"PG Client Async Size = " + pg.defaults.poolSize + " :  DB Client " + this.clientConnectionID + "  Connected",this.databaseAddress,this.databasePort);
 }
 
 /** Generate and return a connection string using database name and address **/
@@ -173,7 +152,7 @@ DBConnection.prototype.PGNewClientSync = function(){
     this.logoutSyncClient()
     newPGClientSync();
   }
-  if( LOG_CONNECTIONS )   console.log(this.databaseName,"PG Client Sync Size = "+pgSync.defaults.poolSize+" :  DB Client " + this.clientConnectionID + "  Connected",this.databaseAddress,this.databasePort);
+  if( LOG_CONNECTIONS != false )   console.log(this.databaseName,"PG Client Sync Size = "+pgSync.defaults.poolSize+" :  DB Client " + this.clientConnectionID + "  Connected",this.databaseAddress,this.databasePort);
 }
 
 /** Query using the Synchronous PG Client **
