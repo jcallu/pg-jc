@@ -89,12 +89,7 @@ var async = require('async')
 TransactionDBConnection.prototype.query = function(queryIn, paramsIn, callback){
   var query = _.cloneDeep(queryIn);
   var params = paramsIn instanceof Array ? _.cloneDeep(paramsIn) : paramsIn;
-
   var startTime = process.hrtime();
-
-  var dbConnectionString = this.getConnectionString();
-
-
   if ( typeof params == 'function' ){
     callback = params;
     params = null;

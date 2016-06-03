@@ -1,16 +1,15 @@
-
-
 var Q = require('q');
 var _ = require('lodash');
 var moment = require('moment-timezone')
-
 /** Constants **/
 var config = require('./config.js')
 var tzName = config.TIMEZONE;
 var PGNativeAsync = require('pg').native
 var PGNativeSync = require('pg-native');
-var pg = {};//PGNativeAsync;
+var pg = PGNativeAsync;//{};//PGNativeAsync;
 var pgSync = {};//new PGNativeSync();
+var pgSyncConnections = {};
+var pgAsyncConnections = {};
 var pgData = {}
 var defaults = {
   reapIntervalMillis: config.PGJC_REAP_INTERVAL_MILLIS || 1000,
@@ -37,30 +36,30 @@ function newPGClientAsync(){
   }
   return pg;
 }
-function newPGClientSync(){
+newPGClientAsync();
+
+function isPGClientAsyncDisconnected(conString){
+  // try { console.log("pg.pools",pg.pools) } catch(e){}
+  // try { console.log("pg.pools.all",pg.pools.all); console.log(); } catch(e){}
+  // try { console.log("pg.pools.all['\"'+conString+'\"']",pg.pools.all['"'+conString+'"']) } catch(e){}
+  return !( pg.pools instanceof Object ) || !( pg.pools.all instanceof Object ) || typeof pg.pools.all['"'+conString+'"'] === 'undefined'
+}
+function newPGClientSync(conString){
   pgSync = new PGNativeSync();
+  pgSyncConnections['"'+conString+'"'] = true;
   pgSync.defaults = !( pgSync.defaults instanceof Object ) ? _.cloneDeep(defaults) : pgSync.defaults;
   pgSync.defaults.poolSize = 1; //sync clients use single connection then die
   return pgSync
 }
-function isPGClientAsyncDisconnected(conString){
-  // try { console.log("pg.pools",pg.pools) } catch(e){}
-  // try { console.log("pg.pools.all",pg.pools.all) } catch(e){}
-  // try { console.log("pg.pools.all['\"'+conString+'\"']",pg.pools.all['"'+conString+'"']) } catch(e){}
-  return !( pg.pools instanceof Object ) || !( pg.pools.all instanceof Object ) || typeof pg.pools.all['"'+conString+'"'] === 'undefined'
+function isPGClientSyncDisconnected(conString){
+  return typeof pgSyncConnections['"'+conString+'"'] === 'undefined' && ( typeof pgSync == 'undefined' || !( pgSync.pq instanceof Object) || ( typeof pgSync.pq.connected == 'boolean' && !pgSync.pq.connected ) )
 }
-function isPGClientSyncDisconnected(){
-  return typeof pgSync == 'undefined' || !( pgSync.pq instanceof Object) || ( typeof pgSync.pq.connected == 'boolean' && !pgSync.pq.connected )
-}
-
-
 function DBConnection(databaseName,databaseAddress,databasePassword,databasePort,databaseUser){
   this.setConnectionParams(databaseName,databaseAddress,databasePassword,databasePort,databaseUser);
   this.pgClientSyncIntervalTimer = 0;
   this.pgClientDefaults = _.cloneDeep(defaults);
   this.clientConnectionID = ( parseInt(pgData.DB_CONNECTION_ID) >= 1 ? parseInt(pgData.DB_CONNECTION_ID) : 1 );
 }
-
 
 DBConnection.prototype.setConnectionParams = function(databaseName,databaseAddress,databasePassword,databasePort,databaseUser){
   this.setDatabaseName(databaseName);
@@ -94,10 +93,10 @@ DBConnection.prototype.setDatabasePassword = function(dbPasswd){
 DBConnection.prototype.PGNewClientAsync = function(){
   if( !this.databaseName ){    console.error( new Error( "DBConnection.databaseName not assigned -> " + this.databaseName + ", typeof -> " + (typeof this.databaseName) ) ); }
   if( !this.databaseAddress ){ console.error( new Error( "DBConnection.databaseAddress not assigned -> " + this.databaseAddress + ", typeof -> " + (typeof this.databaseAddress) ) ); }
-
   var dbConnectionString = this.getConnectionString();
+  // console.log("dbConnectionString",dbConnectionString)
   if( isPGClientAsyncDisconnected(dbConnectionString) ){
-    this.logoutAsyncClient()
+    pgAsyncConnections['"'+dbConnectionString+'"'] = true;
     newPGClientAsync()
   }
   if(  LOG_CONNECTIONS != false ) console.log(this.databaseName,"PG Client Async Size = " + pg.defaults.poolSize + " :  DB Client " + this.clientConnectionID + "  Connected",this.databaseAddress,this.databasePort);
@@ -118,10 +117,7 @@ DBConnection.prototype.getConnectionString = function(){
 
 /** Query using the Asynchronous PG Client **/
 DBConnection.prototype.query = function(query, params, callback){
-
-
   var startTime = process.hrtime();
-
   var dbConnectionString = this.getConnectionString();
   if( isPGClientAsyncDisconnected(dbConnectionString) ) { /* If PG Async Client is disconnected, connect that awesome, piece of awesomeness!!! */
     this.PGNewClientAsync();
@@ -145,12 +141,12 @@ DBConnection.prototype.query = function(query, params, callback){
 };
 
 /** Setup a new Synchronous PG Client **/
-DBConnection.prototype.PGNewClientSync = function(){
+DBConnection.prototype.PGNewClientSync = function(dbConnectionString){
   if( !this.databaseName ){    console.error( new Error( "DBConnection.databaseName not assigned -> " + this.databaseName + ", typeof -> " + (typeof this.databaseName) ) ); }
   if( !this.databaseAddress ){ console.error( new Error( "DBConnection.databaseAddress not assigned -> " + this.databaseAddress + ", typeof -> " + (typeof this.databaseAddress) ) ); }
-  if( isPGClientSyncDisconnected() ){
-    this.logoutSyncClient()
-    newPGClientSync();
+  if( isPGClientSyncDisconnected(dbConnectionString) ){
+    this.timeoutLogoutSyncClient.bind(this)()
+    newPGClientSync(dbConnectionString);
   }
   if( LOG_CONNECTIONS != false )   console.log(this.databaseName,"PG Client Sync Size = "+pgSync.defaults.poolSize+" :  DB Client " + this.clientConnectionID + "  Connected",this.databaseAddress,this.databasePort);
 }
@@ -162,8 +158,10 @@ DBConnection.prototype.PGNewClientSync = function(){
 DBConnection.prototype.querySync = function(query,params,callback){
   clearInterval( this.pgClientSyncIntervalTimer );   /* Prevent logout if it has not happened yet. */
   var error = null;
-  if( isPGClientSyncDisconnected() ){
-    try { this.PGNewClientSync(); } catch(e) { error = e }
+
+  var dbConnectionString = this.getConnectionString()
+  if( isPGClientSyncDisconnected(dbConnectionString) ){
+    this.PGNewClientSync(dbConnectionString);
   }
 
   var startTime = process.hrtime();
@@ -177,18 +175,14 @@ DBConnection.prototype.querySync = function(query,params,callback){
     callback(error,ret)
     return ret;
   }
-
-
-  var dbConnectionString = ''
   try {
-    dbConnectionString = this.getConnectionString();
     pgSync.connectSync( dbConnectionString );
     ret.rows = pgSync.querySync( query, params );
   } catch(e) {
     ret.error = e;
     ret.rows = []
   } // run blocking/synchronous query to db, careful because it throws errors so we try/catched dem' bugs
-  this.timeoutLogoutSyncClient();
+  this.timeoutLogoutSyncClient.bind(this)();
   this.logQuery(startTime, query, params);
   callback(ret.error, ret);
   return ret;
@@ -198,6 +192,7 @@ DBConnection.prototype.querySync = function(query,params,callback){
 DBConnection.prototype.end = function(){
   // console.log("pg",pg,new Error('db.end').stack)
   try { pgSync.end(); } catch(e){ /*console.error(e.stack);*/ } // Force log out of  sync PG clients
+  try { var conString = this.getConnectionString(); delete pgSyncConnections["'"+conString+"'"]; } catch(e){}
   try { pg.end(); } catch(e){ /*console.error(e.stack);*/ } // Force log out of async PG clients
   clearInterval( this.pgClientSyncIntervalTimer );
 }
@@ -211,6 +206,7 @@ DBConnection.prototype.timeoutLogoutSyncClient = function(){
 
 /** Force Sync Client to die **/
 DBConnection.prototype.logoutSyncClient = function(){
+  try { var conString = this.getConnectionString(); delete pgSyncConnections["'"+conString+"'"]; } catch(e){}
   try { pgSync.end(); } catch(e){  } /* If PGSync Client is alive and well destory it. Feel the power of the darkside!!! */
   clearInterval( this.pgClientSyncIntervalTimer ); // Just killed PG Sync Client.
 }

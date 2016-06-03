@@ -71,16 +71,17 @@ function getConnectionFSCacheKey(dbName,dbAddr,dbPort,dbUser){
 
 
 function createVirtualSchema(dbName,dbAddr,dbPasswd,dbPort,dbUser,dbConnection){
-  // console.log("dbName,dbAddr",dbName,dbAddr)
   // var start = process.hrtime();
   var DB = dbName.toUpperCase();
   var CACHE_KEY = getConnectionFSCacheKey(dbName,dbAddr,dbPort,dbUser);
-  // console.log("CACHE_KEY",CACHE_KEY)
   var schemaTmp = {};
   // console.log("process[CACHE_KEY]",process[CACHE_KEY])
   var setCache = isCacheNotSet(CACHE_KEY)
-  // console.log("setCache",setCache)
+
   if( setCache ) {
+    // console.log("dbName,dbAddr",dbName,dbAddr)
+    // console.log("dbConnection",dbConnection)
+    // console.log("setCache",CACHE_KEY,setCache)
     process[CACHE_KEY] = process[CACHE_KEY] || {};
     var data = dbConnection.querySync("select 1 first_db_call_test, '"+dbConnection.databaseAddress+"' as address,'"+dbConnection.databaseName+"' as database")
     initErrorHandler(data.error)
