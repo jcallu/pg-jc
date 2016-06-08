@@ -103,7 +103,7 @@ function createVirtualSchema(dbName,dbAddr,dbPasswd,dbPort,dbUser,dbConnection){
           if ( err ) console.error("Schema Loading error =>",err);
         }
         fs.writeFileSync(pathToFileCache,JSON.stringify({}))
-        if( vgpConfig.ENV === 'development' ) {
+        if( NODE_ENV === 'development' ) {
           throw err;
         }
       }
