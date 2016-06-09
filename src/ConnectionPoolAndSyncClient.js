@@ -22,6 +22,7 @@ var LOG_CONNECTIONS = config.LOG_CONNECTIONS;
 var SYNC_LOGOUT_TIMEOUT = defaults.poolIdleTimeout;
 var DB_LOG_ON = config.DB_LOG_ON
 var DB_LOG_SLOW_QUERIES_ON = config.DB_LOG_SLOW_QUERIES_ON
+var IS_DEV_ENV = config.IS_DEV_ENV
 function newPGClientAsync(){
   pg = PGNativeAsync;
   pg.defaults.reapIntervalMillis = defaults.reapIntervalMillis; // check to kill every 5 seconds
