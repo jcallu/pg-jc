@@ -1,4 +1,3 @@
-
 var PG_JC_HOME = __dirname
 var _ = require('lodash');
 var async = require('async');
@@ -234,7 +233,11 @@ var GenerateWhereObj = function (tableName,tableSchema,whereObjOrRawSQL,AND){
           case ( paramData.js_type == 'string'  ):
             if( typeof value === 'string' ){
               where_CLAUSE += " AND " + key + " = '" + utilityFunctions.escapeApostrophes(value) + "' ";
-            } else {
+            }
+            else if ( value != null && typeof value !== 'undefined' && typeof value.toString === 'function' && value.toString() ){
+              where_CLAUSE += " AND " + key + " = '" + utilityFunctions.escapeApostrophes(value.toString()) + "' ";
+            }
+            else {
               console.error(new Error(tableName+ " "+key+ " not a "+paramData.js_type+" "+value).stack)
             }
             break;
@@ -564,6 +567,9 @@ AbstractTable.prototype.values = function(params){
           break;
         case ( paramData.js_type === 'string' ):
           ofTypeColumn = 'text';
+          if( value !== null && typeof value !== 'undefined' && typeof value != 'string' && value.toString() ){
+            value = value.toString()
+          }
           value = utilityFunctions.escapeApostrophes(value);
           break;
         default:
@@ -604,6 +610,11 @@ AbstractTable.prototype.values = function(params){
           queryParams += " AND " + key + " IS NULL ";
           break;
         case 'object':
+          columnNames.push(key);
+          fieldValue = value;
+          selectValuesAs.push(" '"+fieldValue + "' as " + key+ " ");
+          queryParams += " AND " + key + "::TEXT = '" + fieldValue + "'::TEXT ";
+          break;
         case 'text':
           columnNames.push(key);
           fieldValue = value;
@@ -749,10 +760,11 @@ AbstractTable.prototype.set = function(updateObjOrRawSQL){
           if( (value instanceof Object || value instanceof Array) ){
               value = JSON.stringify(value)
               value = utilityFunctions.escapeApostrophes(value)
-              sql += key + " = " + " '"+utilityFunctions.escapeApostrophes(value)+"' " + " , ";
-          } else if( typeof value === 'string' ){
+              sql += key + " = " + " '"+value+"' " + " , ";
+          }
+          else if( typeof value === 'string' ){
             value = utilityFunctions.escapeApostrophes(value)
-            sql += key + " = " + " '"+utilityFunctions.escapeApostrophes(value)+"' " + " , ";
+            sql += key + " = " + " '"+value+"' " + " , ";
           } else {
             console.error(new Error(self.abstractTableTableName+ " "+key+ " invalid  " + paramData.js_type + " " + value).stack)
           }
@@ -760,15 +772,23 @@ AbstractTable.prototype.set = function(updateObjOrRawSQL){
         case ( paramData.js_type === 'string' ):
           if( typeof value === 'string' ){
               value = utilityFunctions.escapeApostrophes(value)
-              sql += key + " = " + " '"+utilityFunctions.escapeApostrophes(value)+"' " + " , ";
-          } else {
-            console.error(new Error(self.abstractTableTableName+ " "+key+ " invalid  " + paramData.js_type + " " + value).stack)
+              sql += key + " = " + " '"+value+"' " + " , ";
+          }
+          else if ( value != null && typeof value !== 'undefined' && typeof value.toString == 'function' && value.toString() ) {
+            value = utilityFunctions.escapeApostrophes(value.toString())
+            sql += key + " = " + " '"+value+"' " + " , ";
+          }
+          else {
+            console.error(new Error(self.abstractTableTableName+ " "+key+ " invalid  " + paramData.js_type + " " + value + " toString() -> "+ value.toString() ).stack)
           }
           break;
         default:
           try {
             value = value.toString();
-          } catch(e) { value = ''; }
+          } catch(e) {
+            console.error(e.stack);
+            value = '';
+          }
           sql += key + " = " + " '"+utilityFunctions.escapeApostrophes(value)+"' " + " , ";
           break;
       }
